@@ -9,6 +9,7 @@ export function Dashboard({ session }: { session: Session }) {
     'idle' | 'uploading' | 'done' | 'error'
   >('idle')
   const [error, setError] = useState<string | null>(null)
+  const [resumeId, setResumeId] = useState<string | null>(null)
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -22,6 +23,8 @@ export function Dashboard({ session }: { session: Session }) {
 
     const res = await apiFetch('/resumes', { method: 'POST', body: formData })
     if (res.ok) {
+      const resume = await res.json()
+      setResumeId(resume.id)
       setStatus('done')
     } else {
       setStatus('error')
@@ -47,7 +50,13 @@ export function Dashboard({ session }: { session: Session }) {
       {status === 'done' && <p className="text-green-600">Resume saved.</p>}
       {status === 'error' && <p className="text-red-600">{error}</p>}
 
-      <JobAnalysisForm />
+      {resumeId ? (
+        <JobAnalysisForm resumeId={resumeId} />
+      ) : (
+        <p className="text-sm text-gray-500">
+          Upload a resume to analyze a job posting.
+        </p>
+      )}
 
       <button
         onClick={() => supabase.auth.signOut()}
