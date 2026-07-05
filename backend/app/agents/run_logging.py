@@ -12,7 +12,13 @@ from app.services.supabase import get_supabase
 T = TypeVar("T", bound=BaseModel)
 
 
-def run_agent(application_id: str, agent_name: str, kind: str, fn: Callable[[], T]) -> T:
+def run_agent(
+    application_id: str,
+    agent_name: str,
+    kind: str | None,
+    fn: Callable[[], T],
+    attempt: int = 1,
+) -> T:
     supabase = get_supabase()
     run = (
         supabase.table("agent_runs")
@@ -20,6 +26,7 @@ def run_agent(application_id: str, agent_name: str, kind: str, fn: Callable[[], 
             {
                 "application_id": application_id,
                 "agent_name": agent_name,
+                "attempt": attempt,
                 "status": "running",
                 "started_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -44,8 +51,14 @@ def run_agent(application_id: str, agent_name: str, kind: str, fn: Callable[[], 
         }
     ).eq("id", run["id"]).execute()
 
-    supabase.table("artifacts").insert(
-        {"application_id": application_id, "kind": kind, "content": result.model_dump()}
-    ).execute()
+    if kind is not None:
+        supabase.table("artifacts").insert(
+            {
+                "application_id": application_id,
+                "kind": kind,
+                "content": result.model_dump(),
+                "version": attempt,
+            }
+        ).execute()
 
     return result

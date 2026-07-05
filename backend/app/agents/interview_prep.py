@@ -10,11 +10,24 @@ Job analysis:
 
 Match report:
 {match_report}
-
+{feedback_section}
 Produce 4-6 likely interview questions, each with 2-3 suggested talking points.
 """
 
 
-def prepare_interview(job_analysis: dict, match_report: dict) -> InterviewPrep:
-    prompt = PROMPT_TEMPLATE.format(job_analysis=job_analysis, match_report=match_report)
+def prepare_interview(
+    job_analysis: dict, match_report: dict, feedback: list[str] | None = None
+) -> InterviewPrep:
+    feedback_section = ""
+    if feedback:
+        feedback_section = (
+            "\nA previous draft was rejected for these reasons — address them directly:\n"
+            + "\n".join(f"- {item}" for item in feedback)
+            + "\n"
+        )
+    prompt = PROMPT_TEMPLATE.format(
+        job_analysis=job_analysis,
+        match_report=match_report,
+        feedback_section=feedback_section,
+    )
     return generate_structured(prompt, InterviewPrep)

@@ -9,3 +9,5 @@ class AppState(TypedDict):
     match_report: dict | None
     cover_letter: dict | None
     interview_prep: dict | None
+    critic_feedback: dict | None
+    revision_count: int
