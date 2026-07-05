@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { apiFetch } from '../lib/api'
 import { supabase } from '../lib/supabase'
+import { JobAnalysisForm } from '../components/JobAnalysisForm'
 
 export function Dashboard({ session }: { session: Session }) {
   const [status, setStatus] = useState<
@@ -45,6 +46,8 @@ export function Dashboard({ session }: { session: Session }) {
       {status === 'uploading' && <p>Uploading...</p>}
       {status === 'done' && <p className="text-green-600">Resume saved.</p>}
       {status === 'error' && <p className="text-red-600">{error}</p>}
+
+      <JobAnalysisForm />
 
       <button
         onClick={() => supabase.auth.signOut()}

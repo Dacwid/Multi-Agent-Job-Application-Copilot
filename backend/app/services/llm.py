@@ -1,27 +1,32 @@
 """Provider-agnostic structured LLM calls. Currently backed by Gemini;
 swap the implementation here to change providers without touching agent code."""
 
+from functools import lru_cache
 from typing import TypeVar
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from pydantic import BaseModel
 
 from app.config import settings
 
-genai.configure(api_key=settings.gemini_api_key)
-
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-3.5-flash"
 
 T = TypeVar("T", bound=BaseModel)
 
 
+@lru_cache
+def _get_client() -> genai.Client:
+    return genai.Client(api_key=settings.gemini_api_key)
+
+
 def generate_structured(prompt: str, schema: type[T]) -> T:
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            "response_mime_type": "application/json",
-            "response_schema": schema,
-        },
+    response = _get_client().models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=schema,
+        ),
     )
-    return schema.model_validate_json(response.text)
+    return response.parsed
