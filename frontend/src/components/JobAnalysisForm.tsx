@@ -11,24 +11,49 @@ type JobAnalysis = {
   summary: string
 }
 
-export function JobAnalysisForm() {
+type MatchReport = {
+  match_score: number
+  strengths: string[]
+  gaps: string[]
+  suggestions: string[]
+}
+
+type CoverLetter = {
+  body: string
+}
+
+type InterviewPrep = {
+  questions: { question: string; talking_points: string[] }[]
+}
+
+type RunResult = {
+  job_analysis: JobAnalysis
+  match_report: MatchReport
+  cover_letter: CoverLetter
+  interview_prep: InterviewPrep
+}
+
+export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
   const [postingText, setPostingText] = useState('')
   const [status, setStatus] = useState<
-    'idle' | 'submitting' | 'analyzing' | 'done' | 'error'
+    'idle' | 'submitting' | 'running' | 'done' | 'error'
   >('idle')
   const [error, setError] = useState<string | null>(null)
-  const [analysis, setAnalysis] = useState<JobAnalysis | null>(null)
+  const [result, setResult] = useState<RunResult | null>(null)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    setAnalysis(null)
+    setResult(null)
     setStatus('submitting')
 
     const createRes = await apiFetch('/applications', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_posting_text: postingText }),
+      body: JSON.stringify({
+        job_posting_text: postingText,
+        resume_id: resumeId,
+      }),
     })
     if (!createRes.ok) {
       setStatus('error')
@@ -37,18 +62,16 @@ export function JobAnalysisForm() {
     }
     const application = await createRes.json()
 
-    setStatus('analyzing')
-    const analyzeRes = await apiFetch(
-      `/applications/${application.id}/analyze`,
-      { method: 'POST' },
-    )
-    if (!analyzeRes.ok) {
+    setStatus('running')
+    const runRes = await apiFetch(`/applications/${application.id}/run`, {
+      method: 'POST',
+    })
+    if (!runRes.ok) {
       setStatus('error')
-      setError(await analyzeRes.text())
+      setError(await runRes.text())
       return
     }
-    const artifact = await analyzeRes.json()
-    setAnalysis(artifact.content)
+    setResult(await runRes.json())
     setStatus('done')
   }
 
@@ -65,40 +88,79 @@ export function JobAnalysisForm() {
         />
         <button
           type="submit"
-          disabled={status === 'submitting' || status === 'analyzing'}
+          disabled={status === 'submitting' || status === 'running'}
           className="rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         >
-          {status === 'submitting' || status === 'analyzing'
-            ? 'Analyzing...'
-            : 'Analyze posting'}
+          {status === 'submitting' || status === 'running'
+            ? 'Running pipeline...'
+            : 'Run pipeline'}
         </button>
       </form>
 
       {status === 'error' && <p className="text-red-600">{error}</p>}
 
-      {analysis && (
-        <div className="space-y-2 rounded border p-4 text-left">
-          <h2 className="text-lg font-semibold">
-            {analysis.role_title}{' '}
-            <span className="text-sm font-normal text-gray-500">
-              ({analysis.seniority})
-            </span>
-          </h2>
-          <p>{analysis.summary}</p>
-          <div>
-            <strong>Required skills:</strong>{' '}
-            {analysis.required_skills.join(', ')}
+      {result && (
+        <div className="space-y-4 text-left">
+          <div className="space-y-2 rounded border p-4">
+            <h2 className="text-lg font-semibold">
+              {result.job_analysis.role_title}{' '}
+              <span className="text-sm font-normal text-gray-500">
+                ({result.job_analysis.seniority})
+              </span>
+            </h2>
+            <p>{result.job_analysis.summary}</p>
+            <div>
+              <strong>Required skills:</strong>{' '}
+              {result.job_analysis.required_skills.join(', ')}
+            </div>
+            <div>
+              <strong>Nice to have:</strong>{' '}
+              {result.job_analysis.nice_to_have_skills.join(', ')}
+            </div>
+            <div>
+              <strong>Keywords:</strong>{' '}
+              {result.job_analysis.keywords.join(', ')}
+            </div>
+            <div>
+              <strong>Company signals:</strong>{' '}
+              {result.job_analysis.company_signals.join(', ')}
+            </div>
           </div>
-          <div>
-            <strong>Nice to have:</strong>{' '}
-            {analysis.nice_to_have_skills.join(', ')}
+
+          <div className="space-y-2 rounded border p-4">
+            <h2 className="text-lg font-semibold">
+              Match report ({result.match_report.match_score}/100)
+            </h2>
+            <div>
+              <strong>Strengths:</strong>{' '}
+              {result.match_report.strengths.join(', ')}
+            </div>
+            <div>
+              <strong>Gaps:</strong> {result.match_report.gaps.join(', ')}
+            </div>
+            <div>
+              <strong>Suggestions:</strong>{' '}
+              {result.match_report.suggestions.join(', ')}
+            </div>
           </div>
-          <div>
-            <strong>Keywords:</strong> {analysis.keywords.join(', ')}
+
+          <div className="space-y-2 rounded border p-4">
+            <h2 className="text-lg font-semibold">Cover letter</h2>
+            <p className="whitespace-pre-wrap">{result.cover_letter.body}</p>
           </div>
-          <div>
-            <strong>Company signals:</strong>{' '}
-            {analysis.company_signals.join(', ')}
+
+          <div className="space-y-2 rounded border p-4">
+            <h2 className="text-lg font-semibold">Interview prep</h2>
+            {result.interview_prep.questions.map((q, i) => (
+              <div key={i}>
+                <p className="font-medium">{q.question}</p>
+                <ul className="list-disc pl-5">
+                  {q.talking_points.map((point, j) => (
+                    <li key={j}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </div>
       )}
