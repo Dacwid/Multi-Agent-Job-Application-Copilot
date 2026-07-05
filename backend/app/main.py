@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import resumes
+from app.routes import applications, resumes
 
 app = FastAPI(title="ApplyPilot API")
 
@@ -14,6 +14,7 @@ app.add_middleware(
 )
 
 app.include_router(resumes.router)
+app.include_router(applications.router)
 
 
 @app.get("/health")
