@@ -1,12 +1,14 @@
-"""Wraps a single agent call with an agent_runs audit row and an artifacts row.
-Shared by every graph node so the timeline (agent_runs) and results (artifacts)
-stay consistent without repeating the same bookkeeping four times."""
+"""Wraps a single agent call with an agent_runs audit row, an artifacts row,
+and a progress event. Shared by every graph node so the timeline
+(agent_runs + SSE events) and results (artifacts) stay consistent without
+repeating the same bookkeeping four times."""
 
 from datetime import datetime, timezone
 from typing import Callable, TypeVar
 
 from pydantic import BaseModel
 
+from app.agents.events import emit
 from app.services.supabase import get_supabase
 
 T = TypeVar("T", bound=BaseModel)
@@ -20,6 +22,8 @@ def run_agent(
     attempt: int = 1,
 ) -> T:
     supabase = get_supabase()
+    emit(application_id, {"type": "node_start", "agent_name": agent_name, "attempt": attempt})
+
     run = (
         supabase.table("agent_runs")
         .insert(
@@ -41,6 +45,10 @@ def run_agent(
         supabase.table("agent_runs").update(
             {"status": "failed", "finished_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", run["id"]).execute()
+        emit(
+            application_id,
+            {"type": "node_finish", "agent_name": agent_name, "attempt": attempt, "status": "failed"},
+        )
         raise
 
     supabase.table("agent_runs").update(
@@ -60,5 +68,16 @@ def run_agent(
                 "version": attempt,
             }
         ).execute()
+
+    emit(
+        application_id,
+        {
+            "type": "node_finish",
+            "agent_name": agent_name,
+            "attempt": attempt,
+            "status": "completed",
+            "output": result.model_dump(),
+        },
+    )
 
     return result
