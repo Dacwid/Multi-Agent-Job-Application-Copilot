@@ -44,6 +44,44 @@ type RunResult = {
   revision_count: number
 }
 
+const AGENT_ORDER = [
+  'job_analyst',
+  'resume_matcher',
+  'cover_letter',
+  'interview_prep',
+  'critic',
+] as const
+
+const AGENT_LABELS: Record<(typeof AGENT_ORDER)[number], string> = {
+  job_analyst: 'Job Analyst',
+  resume_matcher: 'Resume Matcher',
+  cover_letter: 'Cover Letter',
+  interview_prep: 'Interview Prep',
+  critic: 'Critic',
+}
+
+type NodeStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+type AgentState = { status: NodeStatus; attempt: number }
+
+type StreamEvent =
+  | { type: 'node_start'; agent_name: string; attempt: number }
+  | {
+      type: 'node_finish'
+      agent_name: string
+      attempt: number
+      status: 'completed' | 'failed'
+      output?: unknown
+    }
+  | ({ type: 'done' } & RunResult)
+  | { type: 'error'; message: string }
+
+function initialAgentStates(): Record<string, AgentState> {
+  return Object.fromEntries(
+    AGENT_ORDER.map((name) => [name, { status: 'pending', attempt: 0 }]),
+  )
+}
+
 export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
   const [postingText, setPostingText] = useState('')
   const [status, setStatus] = useState<
@@ -51,11 +89,17 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
   >('idle')
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<RunResult | null>(null)
+  const [agentStates, setAgentStates] = useState<Record<string, AgentState>>(
+    initialAgentStates(),
+  )
+  const [log, setLog] = useState<string[]>([])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
     setResult(null)
+    setLog([])
+    setAgentStates(initialAgentStates())
     setStatus('submitting')
 
     const createRes = await apiFetch('/applications', {
@@ -74,16 +118,61 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
     const application = await createRes.json()
 
     setStatus('running')
-    const runRes = await apiFetch(`/applications/${application.id}/run`, {
-      method: 'POST',
-    })
-    if (!runRes.ok) {
+    const streamRes = await apiFetch(`/applications/${application.id}/run/stream`)
+    if (!streamRes.ok || !streamRes.body) {
       setStatus('error')
-      setError(await runRes.text())
+      setError(await streamRes.text())
       return
     }
-    setResult(await runRes.json())
-    setStatus('done')
+
+    const reader = streamRes.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const frames = buffer.split('\n\n')
+      buffer = frames.pop() ?? ''
+
+      for (const frame of frames) {
+        const line = frame.split('\n').find((l) => l.startsWith('data: '))
+        if (!line) continue
+        const event = JSON.parse(line.slice('data: '.length)) as StreamEvent
+        handleEvent(event)
+      }
+    }
+  }
+
+  function handleEvent(event: StreamEvent) {
+    if (event.type === 'node_start') {
+      setAgentStates((prev) => ({
+        ...prev,
+        [event.agent_name]: { status: 'running', attempt: event.attempt },
+      }))
+      setLog((prev) => [
+        ...prev,
+        `${AGENT_LABELS[event.agent_name as keyof typeof AGENT_LABELS] ?? event.agent_name} started (attempt ${event.attempt})`,
+      ])
+    } else if (event.type === 'node_finish') {
+      setAgentStates((prev) => ({
+        ...prev,
+        [event.agent_name]: { status: event.status, attempt: event.attempt },
+      }))
+      setLog((prev) => [
+        ...prev,
+        `${AGENT_LABELS[event.agent_name as keyof typeof AGENT_LABELS] ?? event.agent_name} ${event.status} (attempt ${event.attempt})`,
+      ])
+    } else if (event.type === 'done') {
+      const { type: _type, ...rest } = event
+      setResult(rest as RunResult)
+      setStatus('done')
+    } else if (event.type === 'error') {
+      setError(event.message)
+      setStatus('error')
+    }
   }
 
   return (
@@ -109,6 +198,39 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
       </form>
 
       {status === 'error' && <p className="text-red-600">{error}</p>}
+
+      {status !== 'idle' && (
+        <div className="grid grid-cols-5 gap-2 text-center text-xs">
+          {AGENT_ORDER.map((name) => {
+            const agent = agentStates[name]
+            const color =
+              agent.status === 'completed'
+                ? 'bg-green-100 text-green-800'
+                : agent.status === 'failed'
+                  ? 'bg-red-100 text-red-800'
+                  : agent.status === 'running'
+                    ? 'bg-yellow-100 text-yellow-800'
+                    : 'bg-gray-100 text-gray-500'
+            return (
+              <div key={name} className={`rounded p-2 ${color}`}>
+                <div className="font-medium">{AGENT_LABELS[name]}</div>
+                <div>
+                  {agent.status}
+                  {agent.attempt > 1 ? ` (#${agent.attempt})` : ''}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {log.length > 0 && (
+        <div className="max-h-40 space-y-1 overflow-y-auto rounded border p-2 text-left text-xs text-gray-600">
+          {log.map((line, i) => (
+            <div key={i}>{line}</div>
+          ))}
+        </div>
+      )}
 
       {result && (
         <div className="space-y-4 text-left">

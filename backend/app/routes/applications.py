@@ -1,6 +1,11 @@
+import json
+import threading
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.agents.events import register_queue, unregister_queue
 from app.agents.graph import graph
 from app.auth import get_current_user_id
 from app.services.supabase import get_supabase
@@ -49,10 +54,12 @@ def _get_owned_application(supabase, application_id: str, user_id: str) -> dict:
     return result.data[0]
 
 
-@router.post("/{application_id}/run")
-def run_application(
-    application_id: str, user_id: str = Depends(get_current_user_id)
-) -> dict:
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+@router.get("/{application_id}/run/stream")
+def stream_application_run(application_id: str, user_id: str = Depends(get_current_user_id)):
     supabase = get_supabase()
     application = _get_owned_application(supabase, application_id, user_id)
 
@@ -66,39 +73,65 @@ def run_application(
     if not resume.data:
         raise HTTPException(status_code=404, detail="Resume not found")
 
-    supabase.table("applications").update({"status": "running"}).eq(
-        "id", application_id
-    ).execute()
+    def event_stream():
+        q = register_queue(application_id)
+        outcome: dict = {}
 
-    try:
-        final_state = graph.invoke(
-            {
-                "application_id": application_id,
-                "job_posting": application["job_posting_text"],
-                "resume_text": resume.data[0]["extracted_text"],
-                "job_analysis": None,
-                "match_report": None,
-                "cover_letter": None,
-                "interview_prep": None,
-                "critic_feedback": None,
-                "revision_count": 0,
-            }
-        )
-    except Exception:
-        supabase.table("applications").update({"status": "failed"}).eq(
-            "id", application_id
-        ).execute()
-        raise
+        def run_graph():
+            try:
+                supabase.table("applications").update({"status": "running"}).eq(
+                    "id", application_id
+                ).execute()
+                outcome["final_state"] = graph.invoke(
+                    {
+                        "application_id": application_id,
+                        "job_posting": application["job_posting_text"],
+                        "resume_text": resume.data[0]["extracted_text"],
+                        "job_analysis": None,
+                        "match_report": None,
+                        "cover_letter": None,
+                        "interview_prep": None,
+                        "critic_feedback": None,
+                        "revision_count": 0,
+                    }
+                )
+                supabase.table("applications").update({"status": "completed"}).eq(
+                    "id", application_id
+                ).execute()
+            except Exception as exc:
+                supabase.table("applications").update({"status": "failed"}).eq(
+                    "id", application_id
+                ).execute()
+                outcome["error"] = str(exc)
+            finally:
+                q.put({"type": "__stream_done__"})
 
-    supabase.table("applications").update({"status": "completed"}).eq(
-        "id", application_id
-    ).execute()
+        thread = threading.Thread(target=run_graph, daemon=True)
+        thread.start()
 
-    return {
-        "job_analysis": final_state["job_analysis"],
-        "match_report": final_state["match_report"],
-        "cover_letter": final_state["cover_letter"],
-        "interview_prep": final_state["interview_prep"],
-        "critic_feedback": final_state["critic_feedback"],
-        "revision_count": final_state["revision_count"],
-    }
+        try:
+            while True:
+                event = q.get()
+                if event["type"] == "__stream_done__":
+                    break
+                yield _sse(event)
+        finally:
+            unregister_queue(application_id)
+
+        if "error" in outcome:
+            yield _sse({"type": "error", "message": outcome["error"]})
+        else:
+            final_state = outcome["final_state"]
+            yield _sse(
+                {
+                    "type": "done",
+                    "job_analysis": final_state["job_analysis"],
+                    "match_report": final_state["match_report"],
+                    "cover_letter": final_state["cover_letter"],
+                    "interview_prep": final_state["interview_prep"],
+                    "critic_feedback": final_state["critic_feedback"],
+                    "revision_count": final_state["revision_count"],
+                }
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
