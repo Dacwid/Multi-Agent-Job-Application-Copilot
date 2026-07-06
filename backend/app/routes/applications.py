@@ -80,6 +80,8 @@ def run_application(
                 "match_report": None,
                 "cover_letter": None,
                 "interview_prep": None,
+                "critic_feedback": None,
+                "revision_count": 0,
             }
         )
     except Exception:
@@ -97,4 +99,6 @@ def run_application(
         "match_report": final_state["match_report"],
         "cover_letter": final_state["cover_letter"],
         "interview_prep": final_state["interview_prep"],
+        "critic_feedback": final_state["critic_feedback"],
+        "revision_count": final_state["revision_count"],
     }

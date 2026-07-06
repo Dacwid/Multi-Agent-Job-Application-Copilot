@@ -26,11 +26,22 @@ type InterviewPrep = {
   questions: { question: string; talking_points: string[] }[]
 }
 
+type CriticFeedback = {
+  cover_letter_pass: boolean
+  cover_letter_score: number
+  cover_letter_feedback: string[]
+  interview_prep_pass: boolean
+  interview_prep_score: number
+  interview_prep_feedback: string[]
+}
+
 type RunResult = {
   job_analysis: JobAnalysis
   match_report: MatchReport
   cover_letter: CoverLetter
   interview_prep: InterviewPrep
+  critic_feedback: CriticFeedback
+  revision_count: number
 }
 
 export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
@@ -101,6 +112,44 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
 
       {result && (
         <div className="space-y-4 text-left">
+          <div className="space-y-1 rounded border p-4 text-sm">
+            <p>
+              Critic rounds: {result.revision_count} — cover letter{' '}
+              <span
+                className={
+                  result.critic_feedback.cover_letter_pass
+                    ? 'text-green-600'
+                    : 'text-red-600'
+                }
+              >
+                {result.critic_feedback.cover_letter_pass ? 'passed' : 'flagged'}
+              </span>{' '}
+              ({result.critic_feedback.cover_letter_score}/100), interview prep{' '}
+              <span
+                className={
+                  result.critic_feedback.interview_prep_pass
+                    ? 'text-green-600'
+                    : 'text-red-600'
+                }
+              >
+                {result.critic_feedback.interview_prep_pass ? 'passed' : 'flagged'}
+              </span>{' '}
+              ({result.critic_feedback.interview_prep_score}/100)
+            </p>
+            {!result.critic_feedback.cover_letter_pass && (
+              <p>
+                Cover letter feedback:{' '}
+                {result.critic_feedback.cover_letter_feedback.join('; ')}
+              </p>
+            )}
+            {!result.critic_feedback.interview_prep_pass && (
+              <p>
+                Interview prep feedback:{' '}
+                {result.critic_feedback.interview_prep_feedback.join('; ')}
+              </p>
+            )}
+          </div>
+
           <div className="space-y-2 rounded border p-4">
             <h2 className="text-lg font-semibold">
               {result.job_analysis.role_title}{' '}
