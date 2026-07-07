@@ -46,6 +46,44 @@ def create_application(
     return result.data[0]
 
 
+@router.get("")
+def list_applications(user_id: str = Depends(get_current_user_id)) -> list[dict]:
+    supabase = get_supabase()
+    applications = (
+        supabase.table("applications")
+        .select("id,job_title,company,status,created_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    if not applications:
+        return []
+
+    app_ids = [a["id"] for a in applications]
+    match_reports = (
+        supabase.table("artifacts")
+        .select("application_id,version,content")
+        .in_("application_id", app_ids)
+        .eq("kind", "match_report")
+        .execute()
+        .data
+    )
+
+    latest_version_by_app: dict[str, int] = {}
+    latest_score_by_app: dict[str, int] = {}
+    for artifact in match_reports:
+        app_id = artifact["application_id"]
+        if app_id not in latest_version_by_app or artifact["version"] > latest_version_by_app[app_id]:
+            latest_version_by_app[app_id] = artifact["version"]
+            latest_score_by_app[app_id] = artifact["content"]["match_score"]
+
+    for application in applications:
+        application["match_score"] = latest_score_by_app.get(application["id"])
+
+    return applications
+
+
 def _get_owned_application(supabase, application_id: str, user_id: str) -> dict:
     result = (
         supabase.table("applications")
@@ -208,3 +246,15 @@ def reject_application(
         application_id,
         Command(resume={"action": "request_changes", "feedback": body.feedback}),
     )
+
+
+@router.post("/{application_id}/retry")
+def retry_application(application_id: str, user_id: str = Depends(get_current_user_id)):
+    supabase = get_supabase()
+    application = _get_owned_application(supabase, application_id, user_id)
+    if application["status"] != "failed":
+        raise HTTPException(status_code=400, detail="Application has not failed")
+
+    # Passing None resumes from the last successful checkpoint instead of
+    # starting over, re-running only the node(s) that failed.
+    return _stream_graph_run(application_id, None)

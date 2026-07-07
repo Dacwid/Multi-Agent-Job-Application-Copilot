@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.5-flash"
 
 # Free-tier Gemini returns transient 503s under load fairly often; a short
 # retry with backoff clears most of them without the caller needing to know.
