@@ -140,7 +140,7 @@ def _route_after_human_approval(state: AppState) -> str | list[str]:
     return targets
 
 
-def _build_graph():
+def _build_graph(checkpointer=None):
     builder = StateGraph(AppState)
     builder.add_node("job_analyst", _job_analyst_node)
     builder.add_node("resume_matcher", _resume_matcher_node)
@@ -158,7 +158,7 @@ def _build_graph():
     builder.add_conditional_edges("critic", _route_after_critic)
     builder.add_conditional_edges("human_approval", _route_after_human_approval)
 
-    return builder.compile(checkpointer=get_checkpointer())
+    return builder.compile(checkpointer=checkpointer or get_checkpointer())
 
 
 @lru_cache

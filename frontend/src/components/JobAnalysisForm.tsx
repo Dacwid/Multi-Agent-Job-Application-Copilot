@@ -111,7 +111,13 @@ async function consumeStream(
   }
 }
 
-export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
+export function JobAnalysisForm({
+  resumeId,
+  onCompleted,
+}: {
+  resumeId: string
+  onCompleted?: () => void
+}) {
   const [postingText, setPostingText] = useState('')
   const [applicationId, setApplicationId] = useState<string | null>(null)
   const [phase, setPhase] = useState<
@@ -153,6 +159,7 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
       const { type: _type, ...rest } = event
       setResult(rest as RunResult)
       setPhase('done')
+      onCompleted?.()
     } else if (event.type === 'error') {
       setError(event.message)
       setPhase('error')
@@ -183,6 +190,7 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
     }
     const application = await createRes.json()
     setApplicationId(application.id)
+    onCompleted?.()
 
     setPhase('running')
     const streamRes = await apiFetch(`/applications/${application.id}/run/stream`)
