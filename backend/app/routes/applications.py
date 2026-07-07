@@ -3,10 +3,11 @@ import threading
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 from pydantic import BaseModel
 
 from app.agents.events import register_queue, unregister_queue
-from app.agents.graph import graph
+from app.agents.graph import get_graph
 from app.auth import get_current_user_id
 from app.services.supabase import get_supabase
 
@@ -18,6 +19,10 @@ class CreateApplication(BaseModel):
     resume_id: str
     job_title: str | None = None
     company: str | None = None
+
+
+class RejectDraft(BaseModel):
+    feedback: str
 
 
 @router.post("")
@@ -54,24 +59,30 @@ def _get_owned_application(supabase, application_id: str, user_id: str) -> dict:
     return result.data[0]
 
 
+def _mark_latest_artifacts_approved(supabase, application_id: str) -> None:
+    for kind in ("cover_letter", "interview_prep"):
+        latest = (
+            supabase.table("artifacts")
+            .select("id")
+            .eq("application_id", application_id)
+            .eq("kind", kind)
+            .order("version", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if latest.data:
+            supabase.table("artifacts").update({"approved": True}).eq(
+                "id", latest.data[0]["id"]
+            ).execute()
+
+
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-@router.get("/{application_id}/run/stream")
-def stream_application_run(application_id: str, user_id: str = Depends(get_current_user_id)):
+def _stream_graph_run(application_id: str, invoke_input):
     supabase = get_supabase()
-    application = _get_owned_application(supabase, application_id, user_id)
-
-    resume = (
-        supabase.table("resumes")
-        .select("extracted_text")
-        .eq("id", application["resume_id"])
-        .eq("user_id", user_id)
-        .execute()
-    )
-    if not resume.data:
-        raise HTTPException(status_code=404, detail="Resume not found")
+    config = {"configurable": {"thread_id": application_id}}
 
     def event_stream():
         q = register_queue(application_id)
@@ -82,22 +93,7 @@ def stream_application_run(application_id: str, user_id: str = Depends(get_curre
                 supabase.table("applications").update({"status": "running"}).eq(
                     "id", application_id
                 ).execute()
-                outcome["final_state"] = graph.invoke(
-                    {
-                        "application_id": application_id,
-                        "job_posting": application["job_posting_text"],
-                        "resume_text": resume.data[0]["extracted_text"],
-                        "job_analysis": None,
-                        "match_report": None,
-                        "cover_letter": None,
-                        "interview_prep": None,
-                        "critic_feedback": None,
-                        "revision_count": 0,
-                    }
-                )
-                supabase.table("applications").update({"status": "completed"}).eq(
-                    "id", application_id
-                ).execute()
+                outcome["result"] = get_graph().invoke(invoke_input, config)
             except Exception as exc:
                 supabase.table("applications").update({"status": "failed"}).eq(
                     "id", application_id
@@ -120,18 +116,95 @@ def stream_application_run(application_id: str, user_id: str = Depends(get_curre
 
         if "error" in outcome:
             yield _sse({"type": "error", "message": outcome["error"]})
-        else:
-            final_state = outcome["final_state"]
+            return
+
+        result = outcome["result"]
+        interrupts = result.get("__interrupt__")
+        if interrupts:
+            supabase.table("applications").update({"status": "awaiting_approval"}).eq(
+                "id", application_id
+            ).execute()
             yield _sse(
                 {
-                    "type": "done",
-                    "job_analysis": final_state["job_analysis"],
-                    "match_report": final_state["match_report"],
-                    "cover_letter": final_state["cover_letter"],
-                    "interview_prep": final_state["interview_prep"],
-                    "critic_feedback": final_state["critic_feedback"],
-                    "revision_count": final_state["revision_count"],
+                    "type": "awaiting_approval",
+                    "cover_letter": result["cover_letter"],
+                    "interview_prep": result["interview_prep"],
+                    "critic_feedback": result["critic_feedback"],
+                    "revision_count": result["revision_count"],
                 }
             )
+            return
+
+        _mark_latest_artifacts_approved(supabase, application_id)
+        supabase.table("applications").update({"status": "completed"}).eq(
+            "id", application_id
+        ).execute()
+        yield _sse(
+            {
+                "type": "done",
+                "job_analysis": result["job_analysis"],
+                "match_report": result["match_report"],
+                "cover_letter": result["cover_letter"],
+                "interview_prep": result["interview_prep"],
+                "critic_feedback": result["critic_feedback"],
+                "revision_count": result["revision_count"],
+            }
+        )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/{application_id}/run/stream")
+def stream_application_run(application_id: str, user_id: str = Depends(get_current_user_id)):
+    supabase = get_supabase()
+    application = _get_owned_application(supabase, application_id, user_id)
+
+    resume = (
+        supabase.table("resumes")
+        .select("extracted_text")
+        .eq("id", application["resume_id"])
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not resume.data:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    initial_state = {
+        "application_id": application_id,
+        "job_posting": application["job_posting_text"],
+        "resume_text": resume.data[0]["extracted_text"],
+        "job_analysis": None,
+        "match_report": None,
+        "cover_letter": None,
+        "interview_prep": None,
+        "critic_feedback": None,
+        "revision_count": 0,
+        "human_review_started": False,
+        "approved": False,
+    }
+    return _stream_graph_run(application_id, initial_state)
+
+
+@router.post("/{application_id}/approve")
+def approve_application(application_id: str, user_id: str = Depends(get_current_user_id)):
+    supabase = get_supabase()
+    application = _get_owned_application(supabase, application_id, user_id)
+    if application["status"] != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Application is not awaiting approval")
+
+    return _stream_graph_run(application_id, Command(resume={"action": "approve"}))
+
+
+@router.post("/{application_id}/reject")
+def reject_application(
+    application_id: str, body: RejectDraft, user_id: str = Depends(get_current_user_id)
+):
+    supabase = get_supabase()
+    application = _get_owned_application(supabase, application_id, user_id)
+    if application["status"] != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Application is not awaiting approval")
+
+    return _stream_graph_run(
+        application_id,
+        Command(resume={"action": "request_changes", "feedback": body.feedback}),
+    )

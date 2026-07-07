@@ -42,3 +42,10 @@ def generate_structured(prompt: str, schema: type[T]) -> T:
             if attempt == MAX_RETRIES:
                 raise
             time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+        except errors.ClientError as exc:
+            # Only 429 (rate limit) is worth retrying — other 4xx codes mean
+            # a real request problem (bad schema, auth, etc.) that won't
+            # resolve itself.
+            if exc.code != 429 or attempt == MAX_RETRIES:
+                raise
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)

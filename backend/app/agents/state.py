@@ -11,3 +11,5 @@ class AppState(TypedDict):
     interview_prep: dict | None
     critic_feedback: dict | None
     revision_count: int
+    human_review_started: bool
+    approved: bool

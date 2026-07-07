@@ -35,13 +35,16 @@ type CriticFeedback = {
   interview_prep_feedback: string[]
 }
 
-type RunResult = {
-  job_analysis: JobAnalysis
-  match_report: MatchReport
+type Draft = {
   cover_letter: CoverLetter
   interview_prep: InterviewPrep
   critic_feedback: CriticFeedback
   revision_count: number
+}
+
+type RunResult = Draft & {
+  job_analysis: JobAnalysis
+  match_report: MatchReport
 }
 
 const AGENT_ORDER = [
@@ -73,6 +76,7 @@ type StreamEvent =
       status: 'completed' | 'failed'
       output?: unknown
     }
+  | ({ type: 'awaiting_approval' } & Draft)
   | ({ type: 'done' } & RunResult)
   | { type: 'error'; message: string }
 
@@ -82,69 +86,45 @@ function initialAgentStates(): Record<string, AgentState> {
   )
 }
 
+async function consumeStream(
+  response: Response,
+  onEvent: (event: StreamEvent) => void,
+) {
+  if (!response.body) return
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() ?? ''
+
+    for (const frame of frames) {
+      const line = frame.split('\n').find((l) => l.startsWith('data: '))
+      if (!line) continue
+      onEvent(JSON.parse(line.slice('data: '.length)) as StreamEvent)
+    }
+  }
+}
+
 export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
   const [postingText, setPostingText] = useState('')
-  const [status, setStatus] = useState<
-    'idle' | 'submitting' | 'running' | 'done' | 'error'
+  const [applicationId, setApplicationId] = useState<string | null>(null)
+  const [phase, setPhase] = useState<
+    'idle' | 'submitting' | 'running' | 'awaiting_approval' | 'done' | 'error'
   >('idle')
   const [error, setError] = useState<string | null>(null)
+  const [draft, setDraft] = useState<Draft | null>(null)
   const [result, setResult] = useState<RunResult | null>(null)
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>(
     initialAgentStates(),
   )
   const [log, setLog] = useState<string[]>([])
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    setResult(null)
-    setLog([])
-    setAgentStates(initialAgentStates())
-    setStatus('submitting')
-
-    const createRes = await apiFetch('/applications', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        job_posting_text: postingText,
-        resume_id: resumeId,
-      }),
-    })
-    if (!createRes.ok) {
-      setStatus('error')
-      setError(await createRes.text())
-      return
-    }
-    const application = await createRes.json()
-
-    setStatus('running')
-    const streamRes = await apiFetch(`/applications/${application.id}/run/stream`)
-    if (!streamRes.ok || !streamRes.body) {
-      setStatus('error')
-      setError(await streamRes.text())
-      return
-    }
-
-    const reader = streamRes.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-
-      const frames = buffer.split('\n\n')
-      buffer = frames.pop() ?? ''
-
-      for (const frame of frames) {
-        const line = frame.split('\n').find((l) => l.startsWith('data: '))
-        if (!line) continue
-        const event = JSON.parse(line.slice('data: '.length)) as StreamEvent
-        handleEvent(event)
-      }
-    }
-  }
+  const [feedbackText, setFeedbackText] = useState('')
 
   function handleEvent(event: StreamEvent) {
     if (event.type === 'node_start') {
@@ -165,14 +145,85 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
         ...prev,
         `${AGENT_LABELS[event.agent_name as keyof typeof AGENT_LABELS] ?? event.agent_name} ${event.status} (attempt ${event.attempt})`,
       ])
+    } else if (event.type === 'awaiting_approval') {
+      const { type: _type, ...rest } = event
+      setDraft(rest)
+      setPhase('awaiting_approval')
     } else if (event.type === 'done') {
       const { type: _type, ...rest } = event
       setResult(rest as RunResult)
-      setStatus('done')
+      setPhase('done')
     } else if (event.type === 'error') {
       setError(event.message)
-      setStatus('error')
+      setPhase('error')
     }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setResult(null)
+    setDraft(null)
+    setLog([])
+    setAgentStates(initialAgentStates())
+    setPhase('submitting')
+
+    const createRes = await apiFetch('/applications', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        job_posting_text: postingText,
+        resume_id: resumeId,
+      }),
+    })
+    if (!createRes.ok) {
+      setPhase('error')
+      setError(await createRes.text())
+      return
+    }
+    const application = await createRes.json()
+    setApplicationId(application.id)
+
+    setPhase('running')
+    const streamRes = await apiFetch(`/applications/${application.id}/run/stream`)
+    if (!streamRes.ok) {
+      setPhase('error')
+      setError(await streamRes.text())
+      return
+    }
+    await consumeStream(streamRes, handleEvent)
+  }
+
+  async function handleApprove() {
+    if (!applicationId) return
+    setPhase('running')
+    const res = await apiFetch(`/applications/${applicationId}/approve`, {
+      method: 'POST',
+    })
+    if (!res.ok) {
+      setPhase('error')
+      setError(await res.text())
+      return
+    }
+    await consumeStream(res, handleEvent)
+  }
+
+  async function handleRequestChanges(e: React.FormEvent) {
+    e.preventDefault()
+    if (!applicationId) return
+    setPhase('running')
+    const res = await apiFetch(`/applications/${applicationId}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback: feedbackText }),
+    })
+    if (!res.ok) {
+      setPhase('error')
+      setError(await res.text())
+      return
+    }
+    setFeedbackText('')
+    await consumeStream(res, handleEvent)
   }
 
   return (
@@ -188,18 +239,18 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
         />
         <button
           type="submit"
-          disabled={status === 'submitting' || status === 'running'}
+          disabled={phase === 'submitting' || phase === 'running'}
           className="rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         >
-          {status === 'submitting' || status === 'running'
+          {phase === 'submitting' || phase === 'running'
             ? 'Running pipeline...'
             : 'Run pipeline'}
         </button>
       </form>
 
-      {status === 'error' && <p className="text-red-600">{error}</p>}
+      {phase === 'error' && <p className="text-red-600">{error}</p>}
 
-      {status !== 'idle' && (
+      {phase !== 'idle' && (
         <div className="grid grid-cols-5 gap-2 text-center text-xs">
           {AGENT_ORDER.map((name) => {
             const agent = agentStates[name]
@@ -232,44 +283,68 @@ export function JobAnalysisForm({ resumeId }: { resumeId: string }) {
         </div>
       )}
 
+      {phase === 'awaiting_approval' && draft && (
+        <div className="space-y-3 rounded border-2 border-yellow-400 p-4 text-left">
+          <h2 className="text-lg font-semibold">Awaiting your approval</h2>
+          <p className="text-sm">
+            Critic: cover letter {draft.critic_feedback.cover_letter_score}/100,
+            interview prep {draft.critic_feedback.interview_prep_score}/100
+            (revision {draft.revision_count})
+          </p>
+          <div className="rounded border p-3">
+            <h3 className="font-medium">Cover letter</h3>
+            <p className="whitespace-pre-wrap text-sm">{draft.cover_letter.body}</p>
+          </div>
+          <div className="rounded border p-3">
+            <h3 className="font-medium">Interview prep</h3>
+            {draft.interview_prep.questions.map((q, i) => (
+              <div key={i} className="mt-2">
+                <p className="text-sm font-medium">{q.question}</p>
+                <ul className="list-disc pl-5 text-sm">
+                  {q.talking_points.map((point, j) => (
+                    <li key={j}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleApprove}
+              className="rounded bg-green-600 px-4 py-2 text-white"
+            >
+              Approve
+            </button>
+          </div>
+          <form onSubmit={handleRequestChanges} className="space-y-2">
+            <textarea
+              required
+              placeholder="What should change?"
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+              rows={3}
+              className="w-full rounded border px-3 py-2"
+            />
+            <button
+              type="submit"
+              className="rounded bg-orange-600 px-4 py-2 text-white"
+            >
+              Request changes
+            </button>
+          </form>
+        </div>
+      )}
+
       {result && (
         <div className="space-y-4 text-left">
           <div className="space-y-1 rounded border p-4 text-sm">
+            <p className="font-medium text-green-700">Approved</p>
             <p>
-              Critic rounds: {result.revision_count} — cover letter{' '}
-              <span
-                className={
-                  result.critic_feedback.cover_letter_pass
-                    ? 'text-green-600'
-                    : 'text-red-600'
-                }
-              >
-                {result.critic_feedback.cover_letter_pass ? 'passed' : 'flagged'}
-              </span>{' '}
-              ({result.critic_feedback.cover_letter_score}/100), interview prep{' '}
-              <span
-                className={
-                  result.critic_feedback.interview_prep_pass
-                    ? 'text-green-600'
-                    : 'text-red-600'
-                }
-              >
-                {result.critic_feedback.interview_prep_pass ? 'passed' : 'flagged'}
-              </span>{' '}
-              ({result.critic_feedback.interview_prep_score}/100)
+              Critic: cover letter {result.critic_feedback.cover_letter_score}/100,
+              interview prep {result.critic_feedback.interview_prep_score}/100
+              (revision {result.revision_count})
             </p>
-            {!result.critic_feedback.cover_letter_pass && (
-              <p>
-                Cover letter feedback:{' '}
-                {result.critic_feedback.cover_letter_feedback.join('; ')}
-              </p>
-            )}
-            {!result.critic_feedback.interview_prep_pass && (
-              <p>
-                Interview prep feedback:{' '}
-                {result.critic_feedback.interview_prep_feedback.join('; ')}
-              </p>
-            )}
           </div>
 
           <div className="space-y-2 rounded border p-4">
