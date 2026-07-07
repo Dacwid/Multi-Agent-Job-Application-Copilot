@@ -10,3 +10,7 @@ dist/
 venv/
 __pycache__/
 *.pyc
+
+.agents
+.claude
+skills-lock.json
