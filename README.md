@@ -128,6 +128,46 @@ cd backend
 pytest
 ```
 
+## Deployment (optional)
+
+Frontend on Vercel, backend on Render's free tier — both free, and Render's
+usual free-tier downsides (databases deleted after 90 days, no persistent
+disk) don't matter here since all data lives in Supabase, not on Render.
+
+### Backend → Render
+
+1. Push this repo to GitHub (if not already).
+2. In Render: **New → Blueprint**, connect the repo. Render reads
+   [`render.yaml`](render.yaml) at the repo root and provisions a free web
+   service rooted at `backend/`.
+3. Fill in the env vars it prompts for — same values as `backend/.env`
+   (`GEMINI_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+   `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`), plus `CORS_ORIGINS` — leave
+   this as `["http://localhost:5173"]` for now, you'll add the Vercel URL
+   once you have it.
+4. Deploy. Note the resulting URL (`https://applypilot-backend-xxxx.onrender.com`).
+   Free tier sleeps after 15 minutes of inactivity — the first request after
+   that takes 30–60s to wake up, which is fine for a portfolio demo.
+
+### Frontend → Vercel
+
+1. In Vercel: **New Project**, import the repo.
+2. Set **Root Directory** to `frontend` (Vercel auto-detects the Vite
+   framework preset from there — no config file needed).
+3. Add env vars: `VITE_API_URL` (the Render URL from above),
+   `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`.
+4. Deploy. Note the resulting URL (`https://your-project.vercel.app`).
+
+### Wire them together
+
+1. Back in Render, update `CORS_ORIGINS` to
+   `["https://your-project.vercel.app"]` (add `http://localhost:5173` too
+   if you still want local dev to work against the deployed backend) and
+   redeploy.
+2. In Supabase → **Authentication → URL Configuration**, add the Vercel
+   URL to **Site URL** / **Redirect URLs** — otherwise auth email links
+   (signup confirmation, password reset) redirect to `localhost`.
+
 ## Project structure
 
 ```
@@ -141,4 +181,5 @@ backend/
   tests/
 db/schema.sql        Full Postgres schema + RLS policies + storage bucket
 docs/architecture.md  Graph design write-up
+render.yaml           Render Blueprint for backend deployment
 ```
