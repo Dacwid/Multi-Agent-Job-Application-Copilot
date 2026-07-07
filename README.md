@@ -10,6 +10,10 @@ orchestration graphs, parallel fan-out, reflection/critique loops,
 structured outputs, human-in-the-loop via graph interrupts, and streaming
 progress to a live timeline UI.
 
+**Live demo:** [multi-agent-job-application-copilot.vercel.app](https://multi-agent-job-application-copilot.vercel.app/)
+(backend is on Render's free tier, so the first request after a period of
+inactivity can take 30–60s to wake up)
+
 See [docs/architecture.md](docs/architecture.md) for the full graph design
 and the reasoning behind it.
 
